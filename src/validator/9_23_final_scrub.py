@@ -408,19 +408,12 @@ def clean_excel_file(file_path):
 
         # Clean Address 1
         if 'Address 1' in df.columns:
-            address_col = df['Address 1'].astype(str).str.strip().str.lower()
-            blocked_addresses = [
-                r'^814 north kentucky avenue$',
-                r'^814 kentucky avenue$',
-                r'^814 n kentucky avenue$',
-                r'^814 n kentucky ave$'
-            ]
-            pattern = '|'.join(blocked_addresses)
+            # Remove specific addresses
             before = len(df)
-            df = df[~address_col.str.match(pattern)]
+            df = df[~df['Address 1'].astype(str).str.strip().str.lower().eq("814 north kentucky avenue")]
             stats["removed_814_n_kentucky"] = before - len(df)
             if stats["removed_814_n_kentucky"]:
-                print(f"🏠 Removed {stats['removed_814_n_kentucky']} row(s) with '814 North Kentucky Avenue' variations")
+                print(f"🏠 Removed {stats['removed_814_n_kentucky']} row(s) with '814 North Kentucky Avenue'")
 
             before = len(df)
             df = df[~df['Address 1'].astype(str).str.strip().str.lower().eq("180 east central avenue")]

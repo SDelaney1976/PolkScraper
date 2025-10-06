@@ -8,20 +8,19 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import tkinter.scrolledtext as scrolledtext
 
-# When launched by the app we set VALIDATOR_NO_POPUPS=1 so this script
-# prints a combined report and exits without opening its own window.
-SUPPRESS_POPUPS = os.environ.get("VALIDATOR_NO_POPUPS") == "1"
+# === CONFIGURATION ===
+GOOGLE_API_KEY = "AIzaSyDmVcjPphH6eG_Bx35tzWhZDoSyF8EH67o"  # <-- put your real key here
 
-GOOGLE_API_KEY = "AIzaSyDmVcjPphH6eG_Bx35tzWhZDoSyF8EH67o"  # your key
-
+# === Safe print for Windows console (avoids UnicodeEncodeError) ===
 def safe_print(*args, **kwargs):
     try:
         print(*args, **kwargs)
     except UnicodeEncodeError:
         txt = " ".join(map(str, args))
-        enc = (getattr(sys.stdout, "encoding", None) or "utf-8")
+        enc = sys.stdout.encoding or "utf-8"
         sys.stdout.write(txt.encode(enc, errors="replace").decode(enc, "replace") + "\n")
 
+# === Address helpers ===
 def build_full_address(row):
     parts = [
         str(row.get("Address 1") or "").strip(),
@@ -59,7 +58,21 @@ def validate_and_parse_address(address, api_key):
     except Exception as e:
         return ("ERROR", "ERROR", "ERROR", "ERROR", str(e))
 
+# === Core processing ===
 def process_file(input_file, api_key):
+    """
+    Returns dict:
+      {
+        "file": <input_file>,
+        "ok": True/False,
+        "validated_rows": int,
+        "duplicates_removed": int,
+        "errors": int,
+        "error_samples": [str,...],
+        "output": <output_file or None>,
+        "message": <error message or None>
+      }
+    """
     info = {
         "file": input_file,
         "ok": False,
@@ -74,6 +87,7 @@ def process_file(input_file, api_key):
     try:
         df = pd.read_excel(input_file)
 
+        # Ensure expected headers (C–K) exist / are named
         expected_headers = [
             "Name", "Address 1", "City", "State", "Zip",
             "Sex", "Race", "Public Defender", "Capture Date"
@@ -83,6 +97,7 @@ def process_file(input_file, api_key):
         for i, header in enumerate(expected_headers):
             df.columns.values[2 + i] = header
 
+        # Filter out General Delivery / Homeless
         df = df[~df["Address 1"].astype(str).str.contains("General Delivery|Homeless", case=False, na=False)]
 
         df["Zip"] = df["Zip"].astype(str)
@@ -106,8 +121,10 @@ def process_file(input_file, api_key):
                 if len(error_examples) < 5:
                     error_examples.append(f"{full_address} -> {err}")
 
+            # light pacing
             time.sleep(0.2)
 
+        # Deduplicate
         dedup_df = df.drop_duplicates(subset=["Name", "Address 1", "City", "State", "Zip"])
         dedup_removed = original_rows - len(dedup_df)
 
@@ -129,6 +146,7 @@ def process_file(input_file, api_key):
         info["message"] = str(e)
         return info
 
+# === Report UI ===
 def show_report_window(root, title, body):
     win = tk.Toplevel(root)
     win.title(title)
@@ -137,38 +155,50 @@ def show_report_window(root, title, body):
     win.transient(root)
     win.grab_set()
 
-    frm = tk.Frame(win, padx=12, pady=12); frm.pack(fill="both", expand=True)
-    tk.Label(frm, text=title, font=("Segoe UI", 12, "bold"), anchor="w", justify="left")\
-        .pack(fill="x", pady=(0, 8))
+    frm = tk.Frame(win, padx=12, pady=12)
+    frm.pack(fill="both", expand=True)
 
-    font = ("Menlo", 11) if sys.platform == "darwin" else ("Consolas", 10)
-    txt = scrolledtext.ScrolledText(frm, wrap="none", font=font)
+    lbl = tk.Label(frm, text=title, font=("Segoe UI", 12, "bold"), anchor="w", justify="left")
+    lbl.pack(fill="x", pady=(0, 8))
+
+    txt = scrolledtext.ScrolledText(frm, wrap="none", font=("Menlo", 11) if sys.platform == "darwin" else ("Consolas", 10))
     txt.pack(fill="both", expand=True)
     txt.insert("1.0", body)
     txt.mark_set("insert", "1.0")
     txt.focus()
 
-    btns = tk.Frame(frm); btns.pack(fill="x", pady=(8, 0))
+    btns = tk.Frame(frm)
+    btns.pack(fill="x", pady=(8, 0))
+
     def do_copy():
         try:
-            root.clipboard_clear(); root.clipboard_append(txt.get("1.0", "end-1c"))
+            root.clipboard_clear()
+            root.clipboard_append(txt.get("1.0", "end-1c"))
         except Exception:
             pass
+
     def do_save_as():
         path = filedialog.asksaveasfilename(
-            parent=win, title="Save Report As…", defaultextension=".txt",
-            initialfile="validation_report.txt", filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+            parent=win,
+            title="Save Report As…",
+            defaultextension=".txt",
+            initialfile="validation_report.txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
         )
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(txt.get("1.0", "end-1c"))
+
     tk.Button(btns, text="Copy to Clipboard", command=do_copy).pack(side="left")
     tk.Button(btns, text="Save as…", command=do_save_as).pack(side="left", padx=(8, 0))
     tk.Button(btns, text="Close", command=win.destroy).pack(side="right")
+
     win.bind("<Escape>", lambda e: win.destroy())
 
+# === Main ===
 if __name__ == "__main__":
-    root = tk.Tk(); root.withdraw()
+    root = tk.Tk()
+    root.withdraw()
 
     files = filedialog.askopenfilenames(
         title="Select Excel file(s) to validate",
@@ -177,16 +207,16 @@ if __name__ == "__main__":
 
     if not files:
         safe_print("No files selected. Exiting.")
-        if not SUPPRESS_POPUPS:
-            messagebox.showinfo("Validation", "No files selected.")
         sys.exit(0)
 
     results = []
     for path in files:
         safe_print("\n" + "=" * 72)
         safe_print(f"Processing: {path}")
-        results.append(process_file(path, GOOGLE_API_KEY))
+        info = process_file(path, GOOGLE_API_KEY)
+        results.append(info)
 
+    # Build one combined report
     lines = []
     lines.append("=" * 72)
     lines.append("📊 Validation Summary")
@@ -195,6 +225,7 @@ if __name__ == "__main__":
     fail_count = len(results) - ok_count
     lines.append(f"Files selected: {len(results)}  |  OK: {ok_count}  |  Failed: {fail_count}")
     lines.append("")
+
     for r in results:
         lines.append("-" * 72)
         lines.append(os.path.basename(r["file"]))
@@ -213,16 +244,11 @@ if __name__ == "__main__":
             if r.get("message"):
                 lines.append(f"  Reason: {r['message']}")
         lines.append("")
-    report_text = "\n".join(lines)
 
-    if SUPPRESS_POPUPS:
-        safe_print("\n" + report_text + "\n")
-        try:
-            sys.stdout.flush(); sys.stderr.flush()
-        except Exception:
-            pass
-        sys.exit(0)
-    else:
-        show_report_window(root, "Validation Summary", report_text)
-        root.mainloop()
-        sys.exit(0)
+    report_text = "\n".join(lines)
+    # Also print to stdout (the launcher can capture if needed)
+    safe_print("\n" + report_text + "\n")
+
+    # Show one scrollable window with the whole summary
+    show_report_window(root, "Validation Summary", report_text)
+    root.mainloop()

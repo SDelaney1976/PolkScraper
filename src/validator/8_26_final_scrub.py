@@ -243,90 +243,6 @@ def parse_name_parts(raw: str) -> Dict[str, str]:
         "full": full
     }
 
-# --- NEW: targeted “O” prefix apostrophe fixer + post-processing -------------
-
-# High-confidence Irish stems where O' is commonly correct (case-insensitive)
-_O_STEMS = {
-    "neal": "Neal", "neil": "Neil", "neill": "Neill",
-    "brien": "Brien", "brian": "Brian",
-    "connor": "Connor", "conner": "Conner",
-    "donnell": "Donnell", "dwyer": "Dwyer",
-    "hara": "Hara", "hare": "Hare",
-    "hagan": "Hagan",
-    "keefe": "Keefe",
-    "leary": "Leary",
-    "reilly": "Reilly", "riley": "Riley", "regan": "Regan",
-    "rourke": "Rourke",
-    "shea": "Shea", "shaughnessy": "Shaughnessy",
-    "sullivan": "Sullivan",
-    "toole": "Toole",
-    "gorman": "Gorman", "gara": "Gara",
-    "malley": "Malley",
-}
-
-_SUFFIX_TOKENS = {"Jr.", "Sr.", "II", "III", "IV", "V"}
-
-def _fix_missing_apostrophe_o_prefix(token: str) -> str:
-    """If token looks like Oneal/Obrien/Oconnor/etc (no apostrophe),
-    convert to O'Neal/O'Brien/O'Connor, using a safe whitelist of stems."""
-    if "'" in token:
-        return token
-    low = token.lower()
-    m = re.match(r"^o([a-z]+)$", low)
-    if not m:
-        return token
-    stem = m.group(1)
-    if stem in _O_STEMS:
-        return "O'" + _O_STEMS[stem]
-    return token
-
-def _postprocess_name(final_name: str) -> str:
-    """
-    Apply three tweaks to the final formatted name:
-      1) Remove period after single-letter middle initials (Sean P. Delaney -> Sean P Delaney)
-      2) Remove hyphens in names (Juan-Carlos -> Juan Carlos)
-      3) Insert missing apostrophes for certain O-prefixed surnames (Oneal -> O'Neal, etc.)
-    """
-    if not final_name:
-        return final_name
-
-    # 1) middle-initial periods → remove (but keep suffix periods like Jr.)
-    # Only remove when it's a standalone initial (e.g., ' P. ')
-    name = re.sub(r"\b([A-Z])\.(?=\s|$)", r"\1", final_name)
-    
-
-    # 2) remove hyphens in names (turn hyphens into spaces)
-    name = name.replace("-", " ")
-
-    # normalize spaces after hyphen removal
-    name = re.sub(r"\s{2,}", " ", name).strip()
-
-    # 3) O' fixer on last-name portion (keep suffix tokens at end)
-    tokens = name.split()
-    if not tokens:
-        return name
-
-    # peel off suffix if present
-    suffix = ""
-    if tokens and tokens[-1] in _SUFFIX_TOKENS:
-        suffix = " " + tokens.pop()
-
-    if not tokens:
-        return (name + suffix).strip()
-
-    # Heuristic: apply O' fixer to the last token of the base name
-    tokens[-1] = _fix_missing_apostrophe_o_prefix(tokens[-1])
-
-    # Also apply to any internal multi-word last names (e.g., "van der Oneil")
-    # This is conservative: only adjust tokens that *start* with 'O' and have no apostrophe.
-    for i in range(max(1, len(tokens) - 3), len(tokens)):  # look back a bit near the end
-        t = tokens[i]
-        if "'" not in t and re.match(r"^O[A-Za-z]{2,}$", t):
-            tokens[i] = _fix_missing_apostrophe_o_prefix(t)
-
-    out = " ".join(tokens) + suffix
-    return re.sub(r"\s{2,}", " ", out).strip()
-
 def format_name(raw: str) -> str:
     """
     Public convenience: return proper-case 'First Middle Last Suffix'.
@@ -386,7 +302,7 @@ def clean_excel_file(file_path):
 
         # Clean Name (use the robust formatter)
         if 'Name' in df.columns:
-            df['Name'] = df['Name'].apply(lambda x: _postprocess_name(format_name(x)))
+            df['Name'] = df['Name'].apply(format_name)
             print("🧼 Cleaned 'Name' column")
 
         # Standardize Race
@@ -402,25 +318,14 @@ def clean_excel_file(file_path):
             if stats["removed_disposed"]:
                 print(f"🗑️ Removed {stats['removed_disposed']} row(s) with Status 'Disposed'")
 
-        # Fix mis-typed city names
-        if "City" in df.columns:
-            df["City"] = df["City"].replace({"CHAMPIONS GT": "Champions Gate"})
-
         # Clean Address 1
         if 'Address 1' in df.columns:
-            address_col = df['Address 1'].astype(str).str.strip().str.lower()
-            blocked_addresses = [
-                r'^814 north kentucky avenue$',
-                r'^814 kentucky avenue$',
-                r'^814 n kentucky avenue$',
-                r'^814 n kentucky ave$'
-            ]
-            pattern = '|'.join(blocked_addresses)
+            # Remove specific addresses
             before = len(df)
-            df = df[~address_col.str.match(pattern)]
+            df = df[~df['Address 1'].astype(str).str.strip().str.lower().eq("814 north kentucky avenue")]
             stats["removed_814_n_kentucky"] = before - len(df)
             if stats["removed_814_n_kentucky"]:
-                print(f"🏠 Removed {stats['removed_814_n_kentucky']} row(s) with '814 North Kentucky Avenue' variations")
+                print(f"🏠 Removed {stats['removed_814_n_kentucky']} row(s) with '814 North Kentucky Avenue'")
 
             before = len(df)
             df = df[~df['Address 1'].astype(str).str.strip().str.lower().eq("180 east central avenue")]

@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+import subprocess
 import shutil
 import threading
 from pathlib import Path
@@ -10,28 +11,10 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import tkinter.filedialog   # ensure PyInstaller bundles filedialog
 import tkinter.scrolledtext as scrolledtext
-from datetime import date, datetime, timedelta
-
-# --- Exports imports (works for both "python -m src.app" and "python src/app.py") ---
-# If running as a package (__package__ is set), use relative imports.
-# If running the file directly, add src/ to sys.path and use absolute imports.
-if __package__:
-    from .exports.export_data import export_today_merge_data_with_gui
-    from .exports import generate_english_letters as _force_letters
-    from .exports import generate_spanish_letters as _force_letters_es
-else:
-    _here = Path(__file__).resolve().parent  # .../project/src
-    if str(_here) not in sys.path:
-        sys.path.insert(0, str(_here))       # make "exports" importable
-    from exports.export_data import export_today_merge_data_with_gui
-    import exports.generate_english_letters as _force_letters
-    import exports.generate_spanish_letters as _force_letters_es
-
-# --- Export for Word mail-merge (new) ---
-import subprocess  # used to reveal exported file in Finder on macOS
+from datetime import datetime
 
 APP_TITLE = "POLK County Scraper"
-APP_VERSION = "v1.6"
+APP_VERSION = "v1.2"
 DEFAULT_URL = "https://showcase.polkcountyclerk.net/showcaseweb/"
 DEFAULT_DEBUG_PORT = 9222
 
@@ -46,7 +29,7 @@ FROZEN = bool(getattr(sys, "frozen", False))
 
 # Path to an Output folder in the repo (works in dev & frozen builds)
 if FROZEN:
-    # Saved to: /Users/you/Documents/PolkScraper/Output (adjusted by parents)
+    # Saved to: /Users/sdelaney/Documents/PolkScraper/Output
     repo_root = Path(sys.executable).resolve().parents[4]
 else:
     # In dev, go two levels up from src/app.py to reach repo root
@@ -56,6 +39,9 @@ EXPORT_DIR = repo_root / "Output"
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Force-bundle runtime deps used by validator/final_scrub ---
+# PyInstaller only bundles modules it "sees" from the entrypoint.
+# Your validator modules are run at runtime, so we import their deps here
+# to force PyInstaller to include them in the app bundle.
 try:
     import pandas, numpy, openpyxl, et_xmlfile  # pandas/openpyxl stack
     import requests, certifi, urllib3, chardet, idna  # requests stack
@@ -94,19 +80,6 @@ def resource_path(relpath: str) -> str:
     else:
         base = os.path.dirname(os.path.abspath(__file__))
     return os.path.normpath(os.path.join(base, relpath))
-
-def _open_file_cross_platform(path: str):
-    try:
-        if is_macos():
-            subprocess.run(["open", path], check=False)
-        elif is_windows():
-            os.startfile(path)  # type: ignore[attr-defined]
-        else:
-            subprocess.run(["xdg-open", path], check=False)
-        return True
-    except Exception:
-        return False
-
 
 # -------------------------------
 # Chrome helpers
@@ -299,14 +272,11 @@ def run_module_blocking(module_name: str):
         cmd = [sys.executable, "-m", module_name]
 
     env = os.environ.copy()
+    # Force UTF-8 so emoji/logs never break decoding
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    # IMPORTANT: tell validator to suppress its own popup and exit cleanly
     if module_name == "validator.validate_address":
         env["VALIDATOR_NO_POPUPS"] = "1"
-
-    # ✅ make src/ visible to child processes during dev runs
-    src_path = str(repo_root / "src")
-    sep = os.pathsep
-    env["PYTHONPATH"] = src_path if "PYTHONPATH" not in env else f"{src_path}{sep}{env['PYTHONPATH']}"
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if is_windows() else 0
 
@@ -317,7 +287,7 @@ def run_module_blocking(module_name: str):
         encoding="utf-8",
         errors="replace",
         creationflags=creationflags,
-        env=env,
+        env=env,                     # <— pass our env
     )
     return proc.returncode, (proc.stdout or ""), (proc.stderr or "")
 
@@ -341,17 +311,14 @@ def run_capture_cases_with_stdin(start_str: str, end_str: str, case_abbr: str):
         encoding="utf-8",
         errors="replace",
         creationflags=creationflags,
-        env=dict(
-            os.environ,
-            PYTHONIOENCODING="utf-8",
-            PYTHONPATH=str(repo_root / "src"),
-        ),
-        cwd=str(EXPORT_DIR),  # ensure outputs are saved in Output folder
+        env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+        cwd=str(EXPORT_DIR),  # <— ensure outputs are saved in Output folder
     )
 
     payload = f"{start_str}\n{end_str}\n{case_abbr}\n"
     out, err = proc.communicate(payload)
 
+    # Optional: append save location to report output
     if out:
         out += f"\n\n📂 Saved to: {EXPORT_DIR}"
 
@@ -414,7 +381,6 @@ def build_ui():
             c["debug_port"] = DEFAULT_DEBUG_PORT
         save_config(c)
 
-    # Launch Chrome
     ttk.Button(
         btns,
         text="🚀 Launch Chrome (Incognito + Debug)",
@@ -429,18 +395,12 @@ def build_ui():
         dlg.grab_set()
         dlg.resizable(False, False)
 
-        # Compute default dates
-        today = date.today()
-        # go back to Monday (0 = Monday, 6 = Sunday)
-        monday = today - timedelta(days=today.weekday())
-        tomorrow = today + timedelta(days=1)
-
         tk.Label(dlg, text="Start Date (MM/DD/YYYY):").grid(row=0, column=0, padx=8, pady=(10,4), sticky="w")
-        start_var = tk.StringVar(value=monday.strftime("%m/%d/%Y"))
+        start_var = tk.StringVar()
         tk.Entry(dlg, textvariable=start_var, width=16).grid(row=0, column=1, padx=8, pady=(10,4), sticky="w")
 
         tk.Label(dlg, text="End Date (MM/DD/YYYY):").grid(row=1, column=0, padx=8, pady=4, sticky="w")
-        end_var = tk.StringVar(value=tomorrow.strftime("%m/%d/%Y"))
+        end_var = tk.StringVar()
         tk.Entry(dlg, textvariable=end_var, width=16).grid(row=1, column=1, padx=8, pady=4, sticky="w")
 
         tk.Label(dlg, text="Case Type:").grid(row=2, column=0, padx=8, pady=(8,4), sticky="w")
@@ -474,7 +434,7 @@ def build_ui():
 
             dlg.destroy()
 
-            # show spinner & run on background thread
+            # show spinner & run on background thread (same UX as other tools)
             set_running(True)
             status_lbl.config(text="Running capture…")
 
@@ -516,6 +476,7 @@ def build_ui():
 
         dlg.bind("<Escape>", lambda e: dlg.destroy())
 
+    # Place the new button alongside your existing ones:
     ttk.Button(btns, text="📥 Capture Cases", command=open_capture_dialog)\
         .pack(fill="x", pady=(0, 6), ipadx=6, ipady=3)
 
@@ -534,11 +495,11 @@ def build_ui():
             )
             return
 
+        # Run as a module (same pattern as other tools)
         run_tool("capture.gather_case_details", "Get Case Details Report")
 
     ttk.Button(btns, text="📄 Get Case Details", command=run_details)\
         .pack(fill="x", pady=(0, 6), ipadx=6, ipady=3)
-
 
     # Shared spinner
     prog = ttk.Progressbar(main, mode="indeterminate")
@@ -588,6 +549,7 @@ def build_ui():
 
                 root.after(0, done)
             except Exception as e:
+                # Make SURE we stop spinner even on unexpected errors
                 def done_err():
                     set_running(False)
                     messagebox.showerror("Error", f"{module_name} crashed:\n{e}", parent=root)
@@ -596,65 +558,16 @@ def build_ui():
 
         threading.Thread(target=worker, daemon=True).start()
 
-    # Generate English letters
-    def run_generate_english():
-        run_tool("exports.generate_english_letters", "Generate English Letters")
-
-    # Generate English letters
-    def run_generate_spanish():
-        run_tool("exports.generate_spanish_letters", "Generate Spanish Letters")
-
-    def run_envelopes():
-        # load latest config
-        cfg_local = load_config()
-        tpl = cfg_local.get("envelope_template", "")
-
-        # if not set or missing, prompt for it
-        if not tpl or not os.path.isfile(tpl):
-            from tkinter import filedialog
-            tpl = filedialog.askopenfilename(
-                parent=root,
-                title="Select the Envelope Merge Template (.docx/.docm)",
-                filetypes=[("Word documents", "*.docx *.docm"), ("All files", "*.*")]
-            )
-            if not tpl:
-                messagebox.showinfo("Canceled", "No template selected.")
-                return
-            # remember it for next time
-            cfg_local["envelope_template"] = tpl
-            save_config(cfg_local)
-
-        # open it
-        ok = _open_file_cross_platform(tpl)
-        if not ok:
-            messagebox.showerror("Open Failed", f"Could not open:\n{tpl}")
-        else:
-            status_lbl.config(text=f"Opened envelope template: {tpl}")
-
-    # Validate / Cleanup / Export / Generate / Incognito / Exit
-    ttk.Button(btns, text="✅ Validate Addresses",
-               command=lambda: run_tool("validator.validate_address", "Validate Report"))\
+    # Buttons: each module drives its own multi-file picker inside itself
+    ttk.Button(btns, text="✅ Validate Addresses", command=lambda: run_tool("validator.validate_address", "Validate Report"))\
         .pack(fill="x", pady=(0, 6), ipadx=6, ipady=3)
 
-    ttk.Button(btns, text="🧹 Final Cleanup",
-               command=lambda: run_tool("validator.final_scrub", "Final Cleanup Report"))\
+    ttk.Button(btns, text="🧹 Final Cleanup", command=lambda: run_tool("validator.final_scrub", "Final Cleanup Report"))\
         .pack(fill="x", pady=(0, 6), ipadx=6, ipady=3)
 
-    ttk.Button(btns, text="📤 Export Data for Mail Merge", command=on_export_data)\
+    ttk.Button(btns, text="🕵️ Launch Chrome (Incognito)",
+               command=lambda: (save_prefs(), launch_chrome(url_var.get(), True, None, status_lbl, root)))\
         .pack(fill="x", pady=(0, 6), ipadx=6, ipady=3)
-
-    ttk.Button(btns, text="🇺🇸 Generate English Letters", command=run_generate_english)\
-        .pack(fill="x", pady=(0, 6), ipadx=6, ipady=3)
-    
-    ttk.Button(btns, text="🇪🇸 Generate Spanish Letters", command=run_generate_spanish)\
-        .pack(fill="x", pady=(0, 6), ipadx=6, ipady=3)
-
-    ttk.Button(btns, text="✉️ Generate Envelopes", command=run_envelopes)\
-        .pack(fill="x", pady=(0, 6), ipadx=6, ipady=3)
-
-    #ttk.Button(btns, text="🕵️ Launch Chrome (Incognito)",
-    #           command=lambda: (save_prefs(), launch_chrome(url_var.get(), True, None, status_lbl, root)))\
-    #    .pack(fill="x", pady=(0, 6), ipadx=6, ipady=3)
 
     ttk.Button(btns, text="❌ Exit", command=root.destroy).pack(fill="x", ipadx=6, ipady=3)
 
@@ -662,37 +575,11 @@ def build_ui():
     return root
 
 # -------------------------------
-# New: Export handler (top-level function)
-# -------------------------------
-def on_export_data():
-    """
-    Export a merge-ready Excel for Word:
-    - pick 1–3 source Excel files
-    - prompt for date (YYYY-MM-DD)
-    - save <project>/Output/MergeData_YYYY-MM-DD.xlsx (Table 'MergeDataTable', sheet 'MergeData')
-    """
-    try:
-        out_path = export_today_merge_data_with_gui()
-        try:
-            messagebox.showinfo("Export complete", f"Saved:\n{out_path}")
-        except Exception:
-            print(f"Export complete: {out_path}")
-        # Optional: Reveal in Finder (Mac)
-        try:
-            subprocess.run(["open", "-R", str(out_path)], check=False)
-        except Exception:
-            pass
-    except Exception as e:
-        try:
-            messagebox.showerror("Export failed", str(e))
-        except Exception:
-            print(f"Export failed: {e}")
-
-# -------------------------------
 # Frozen child entry: run any module
 # -------------------------------
 def _run_module_entry(modname: str):
     import runpy
+    # give child a clean argv so your scripts only see their own name
     sys.argv = [modname]
     try:
         runpy.run_module(modname, run_name="__main__")

@@ -1,4 +1,5 @@
 pandas
 openpyxl
-python-dateutil
 requests
+python-dateutil
+selenium
