@@ -4,6 +4,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
+from selenium.webdriver.common.keys import Keys
 import datetime
 import time
 import pandas as pd
@@ -45,11 +46,13 @@ def get_monday_to_today():
 
 def extract_case_data(driver):
     wait = WebDriverWait(driver, 25)
+    # FIXED: Use contains() to match any DataTables_Table_X where X is any number
     wait.until(EC.presence_of_element_located(
-        (By.XPATH, "//table[@id='DataTables_Table_0']//tbody//tr")
+        (By.XPATH, "//table[contains(@id,'DataTables_Table')]//tbody//tr")
     ))
 
-    rows = driver.find_elements(By.XPATH, "//table[@id='DataTables_Table_0']//tbody//tr")
+    # FIXED: Find whichever DataTables table is present
+    rows = driver.find_elements(By.XPATH, "//table[contains(@id,'DataTables_Table')]//tbody//tr")
     case_data = []
     for row in rows:
         try:
@@ -86,24 +89,41 @@ def paginate_and_collect_all_case_data(driver):
     return all_data
 
 def run_case_search_and_export(from_date, to_date, court_type, court_abbr, case_number="0"):
-    url = "https://showcase.polkcountyclerk.net/showcaseweb/"
     driver = setup_driver()
     wait = WebDriverWait(driver, 30)
 
-    driver.get(url)
-
+    # NO driver.get() - assume user is already on the page
+    
+    # Click Case Search to ensure we're on the search form
     wait.until(EC.element_to_be_clickable((By.LINK_TEXT, "Case Search"))).click()
     wait.until(EC.visibility_of_element_located((By.XPATH, "//input[@placeholder='From Date:']")))
+    
+    # Give the form a moment to fully load
+    time.sleep(0.5)
 
-    driver.find_element(By.XPATH, "//input[@placeholder='Case Number']").send_keys(case_number)
-    driver.find_element(By.XPATH, "//input[@placeholder='From Date:']").send_keys(from_date)
-    driver.find_element(By.XPATH, "//input[@placeholder='To Date:']").send_keys(to_date)
+    # CLEAR all form fields before filling (important for subsequent runs)
+    case_number_field = driver.find_element(By.XPATH, "//input[@placeholder='Case Number']")
+    case_number_field.clear()
+    case_number_field.send_keys(case_number)
+    
+    from_date_field = driver.find_element(By.XPATH, "//input[@placeholder='From Date:']")
+    from_date_field.clear()
+    from_date_field.send_keys(from_date)
+    
+    to_date_field = driver.find_element(By.XPATH, "//input[@placeholder='To Date:']")
+    to_date_field.clear()
+    to_date_field.send_keys(to_date)
 
     court_type_dropdown = wait.until(EC.element_to_be_clickable(
         (By.XPATH, "//label[contains(text(),'Court Type')]/following-sibling::select")))
     Select(court_type_dropdown).select_by_visible_text(court_type)
 
-    driver.find_element(By.XPATH, "//button[contains(text(),'Search')]").click()
+    # Click search button
+    search_button = driver.find_element(By.XPATH, "//button[contains(text(),'Search')]")
+    search_button.click()
+    
+    # Wait for the search to complete and results to load
+    time.sleep(2)
 
     case_data = paginate_and_collect_all_case_data(driver)
 
@@ -112,7 +132,8 @@ def run_case_search_and_export(from_date, to_date, court_type, court_abbr, case_
     for case in case_data[:5]:
         print("-", case["Case Number"])
 
-    driver.quit()
+    # NO driver.quit() - keep the session alive for next run
+    print("✅ Chrome session remains open for next search!")
 
     if not case_data:
         print("⚠️ No case data found.")
@@ -226,3 +247,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -413,7 +413,8 @@ def clean_excel_file(file_path):
                 r'^814 north kentucky avenue$',
                 r'^814 kentucky avenue$',
                 r'^814 n kentucky avenue$',
-                r'^814 n kentucky ave$'
+                r'^814 n kentucky ave$',
+                r'^814 kentucky ave$'
             ]
             pattern = '|'.join(blocked_addresses)
             before = len(df)

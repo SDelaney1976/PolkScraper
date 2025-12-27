@@ -11,28 +11,6 @@ import os
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
-REQUIRED_COLS_ORDER = [
-    "Name", "Address 1", "City", "State", "Zip",
-    "Sex", "Race", "Public Defender", "Capture Date"
-]
-
-def ensure_required_columns(df: pd.DataFrame, set_capture_date: bool = False) -> pd.DataFrame:
-    """Add any missing required columns and place them at the end in REQUIRED_COLS_ORDER."""
-    # Add missing required columns
-    for col in REQUIRED_COLS_ORDER:
-        if col not in df.columns:
-            df[col] = ""
-
-    # Optionally set Capture Date for these rows (today, MM/DD/YYYY)
-    if set_capture_date:
-        today_str = datetime.date.today().strftime("%m/%d/%Y")
-        df["Capture Date"] = today_str
-
-    # Reorder so required columns are always at the end in the exact order
-    non_required = [c for c in df.columns if c not in REQUIRED_COLS_ORDER]
-    df = df[non_required + REQUIRED_COLS_ORDER]
-    return df
-
 def setup_driver():
     options = Options()
     options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
@@ -111,83 +89,53 @@ def run_case_search_and_export(from_date, to_date, court_type, court_abbr, case_
     print("📄 Sample scraped case numbers:")
     for case in case_data[:5]:
         print("-", case["Case Number"])
-
+    
     driver.quit()
 
-    if not case_data:
-        print("⚠️ No case data found.")
-        return
+    if case_data:
+        monday_date = datetime.date.today() - datetime.timedelta(days=datetime.date.today().weekday())
+        formatted_date = monday_date.strftime("%m_%d_%Y")
+        filename = f"{court_abbr}_{formatted_date}_cases.xlsx"
 
-    # Output filename based on Monday-of-week + court abbr
-    monday_date = datetime.date.today() - datetime.timedelta(days=datetime.date.today().weekday())
-    formatted_date = monday_date.strftime("%m_%d_%Y")
-    filename = f"{court_abbr}_{formatted_date}_cases.xlsx"
+        new_df = pd.DataFrame(case_data)
 
-    # New data
-    new_df = pd.DataFrame(case_data)
-    # Ensure required columns for NEW rows (also sets Capture Date)
-    new_df = ensure_required_columns(new_df, set_capture_date=True)
+        if os.path.exists(filename):
+            existing_df = pd.read_excel(filename)
+            existing_case_numbers = set(existing_df['Case Number'].astype(str))
+            new_df_filtered = new_df[~new_df['Case Number'].astype(str).isin(existing_case_numbers)]
 
-    if os.path.exists(filename):
-        # Load existing file
-        existing_df = pd.read_excel(filename)
+            if not new_df_filtered.empty:
+                with pd.ExcelWriter(filename, mode='a', engine='openpyxl', if_sheet_exists='overlay') as writer:
+                    start_row = len(existing_df) + 1
+                    new_df_filtered.to_excel(writer, index=False, header=False, startrow=start_row)
 
-        # If existing file lacks required columns, fix it and rewrite once
-        need_rewrite = any(col not in existing_df.columns for col in REQUIRED_COLS_ORDER)
-        if need_rewrite:
-            existing_df = ensure_required_columns(existing_df, set_capture_date=False)
-            # Rewrite the whole file with updated columns/order
-            existing_df.to_excel(filename, index=False)
+                wb = load_workbook(filename)
+                ws = wb.active
+                green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
 
-        # Deduplicate by Case Number against (possibly rewritten) existing_df
-        existing_case_numbers = set(existing_df['Case Number'].astype(str))
-        new_df_filtered = new_df[~new_df['Case Number'].astype(str).isin(existing_case_numbers)]
+                for row in range(start_row + 1, start_row + 1 + len(new_df_filtered)):
+                    for col in range(1, len(new_df_filtered.columns) + 1):
+                        ws.cell(row=row, column=col).fill = green_fill
 
-        if not new_df_filtered.empty:
-            # Align columns to the existing file's column order (so headerless append is safe)
-            aligned_cols = list(existing_df.columns)
-            # Add any truly new columns (unlikely, but safe-guard)
-            for c in new_df_filtered.columns:
-                if c not in aligned_cols:
-                    aligned_cols.append(c)
-            new_df_filtered = new_df_filtered.reindex(columns=aligned_cols, fill_value="")
+                wb.save(filename)
+                print(f"✅ Appended {len(new_df_filtered)} new cases to '{filename}' (highlighted in green)")
+            else:
+                print("✅ No new cases found — file already contains all cases.")
+        else:
+            new_df.to_excel(filename, index=False)
 
-            # Append without headers
-            start_row = len(existing_df) + 1
-            with pd.ExcelWriter(filename, mode='a', engine='openpyxl', if_sheet_exists='overlay') as writer:
-                new_df_filtered.to_excel(writer, index=False, header=False, startrow=start_row)
-
-            # Highlight appended rows green
             wb = load_workbook(filename)
             ws = wb.active
             green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-            # Use number of columns from the sheet header row
-            num_cols = ws.max_column
-            # Appended region: rows start_row+1 ... start_row+len(new_df_filtered)
-            for row in range(start_row + 1, start_row + 1 + len(new_df_filtered)):
-                for col in range(1, num_cols + 1):
+
+            for row in range(2, len(new_df) + 2):
+                for col in range(1, len(new_df.columns) + 1):
                     ws.cell(row=row, column=col).fill = green_fill
+
             wb.save(filename)
-
-            print(f"✅ Appended {len(new_df_filtered)} new cases to '{filename}' (highlighted in green)")
-        else:
-            print("✅ No new cases found — file already contains all cases.")
+            print(f"✅ Created '{filename}' with {len(new_df)} new cases (highlighted in green)")
     else:
-        # First time creating the file — ensure required columns and save
-        new_df = ensure_required_columns(new_df, set_capture_date=True)
-        new_df.to_excel(filename, index=False)
-
-        # Highlight all rows green (excluding header)
-        wb = load_workbook(filename)
-        ws = wb.active
-        green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-        num_cols = ws.max_column
-        for row in range(2, len(new_df) + 2):
-            for col in range(1, num_cols + 1):
-                ws.cell(row=row, column=col).fill = green_fill
-        wb.save(filename)
-
-        print(f"✅ Created '{filename}' with {len(new_df)} new cases (highlighted in green)")
+        print("⚠️ No case data found.")
 
 def main():
     print("Enter the date range for your search.")
